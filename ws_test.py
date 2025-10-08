@@ -7,7 +7,7 @@ from selenium.webdriver.support import expected_conditions as EC
 driver = webdriver.Chrome()
 
 # Apri la pagina desiderata
-driver.get('https://unibg.coursecatalogue.cineca.it/insegnamenti/2025/9170_49403_1036/2025/9170/1363?coorte=2025&schemaid=77517')
+driver.get('https://unibg.coursecatalogue.cineca.it/insegnamenti/2025/21011-1/2025/9170/1363?coorte=2025&schemaid=77517&adCodRadice=21011')
 #selezione la parte interessata
 selector = 'dd+ dt'
 #Attendo che gli elementi siano presenti
@@ -29,6 +29,26 @@ content_selector = '.accordion'
 contents = WebDriverWait(driver, 60).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, content_selector)))
  
 all_data = []
+
+title_selector = '.u-filetto'
+titles = WebDriverWait(driver, 60).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, title_selector)))
+
+
+# Estrazione dei dati
+for title in titles:
+    title = title.text.strip()  
+    id_corso = title.split("]")[0].strip("[")     
+    titolo_corso = title.split(" - ")[1]          
+
+# Creazione del dizionario
+corso = {
+    "id": id_corso,
+    "titolo": titolo_corso
+}
+
+all_data.append(corso)
+
+
 for dl in contents:
     dt_elements = dl.find_elements(By.TAG_NAME, "dt")
     dd_elements = dl.find_elements(By.TAG_NAME, "dd")
@@ -42,8 +62,13 @@ for dl in contents:
     all_data.append(data)
 # for content in contents:
 #    print(content.text)
+# Rimuovi la chiave 'Informazioni generali' se esiste
+data.pop('Informazioni generali', None)
 
-print(all_data)
+# Unione dei due dizionari
+insegnamento = {**all_data[0], **all_data[1]}
+print(insegnamento)
+
 # Chiudi il driver
 driver.quit()
 
