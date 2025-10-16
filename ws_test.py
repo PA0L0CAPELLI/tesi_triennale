@@ -3,6 +3,86 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
+from selenium.common.exceptions import TimeoutException
+import pandas as pd
+
+#functions-------------------------------------------------------------
+
+def estrai_insegnamento(driver):
+    #selezione la parte interessata
+    selector = 'dd+ dt'
+    #Attendo che gli elementi siano presenti
+    try:
+        links = WebDriverWait(driver, 4).until(
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
+        )
+    except TimeoutException:
+        return {
+            "dati_presenti": False,
+            "motivo": "Elementi 'dd+ dt' non trovati entro 1s",
+            "url": driver.current_url
+        }
+
+
+    # Itera su ogni elemento in links
+    for link in links:
+        try:
+            # Clicca sull'elemento per rivelare il contenuto
+            link.click()
+            
+            
+        except Exception as e:
+            print(f"Errore durante il clic su un elemento: {e}")
+
+    content_selector = '.accordion'
+    contents = WebDriverWait(driver, 4).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, content_selector)))
+    
+    all_data = []
+
+    title_selector = '.u-filetto'
+    titles = WebDriverWait(driver, 4).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, title_selector)))
+
+
+    # Estrazione dei dati
+    for title in titles:
+        title = title.text.strip()  
+        id_insegnamento = title.split("]")[0].strip("[")     
+        titolo_insegnamento = title.split("-")[1]          
+
+    # Creazione del dizionario
+    insegnamento = {
+        "id": id_insegnamento,
+        "titolo": titolo_insegnamento
+    }
+
+    all_data.append(corso)
+
+
+    for dl in contents:
+        dt_elements = dl.find_elements(By.TAG_NAME, "dt")
+        dd_elements = dl.find_elements(By.TAG_NAME, "dd")
+
+        data = {}
+        for dt, dd in zip(dt_elements, dd_elements):
+            key = dt.text.strip()
+            value = dd.text.strip()
+            data[key] = value
+
+        all_data.append(data)
+    # for content in contents:
+    #    print(content.text)
+    # Rimuovi la chiave 'Informazioni generali' se esiste
+    data.pop('Informazioni generali', None)
+
+    # Unione dei due dizionari
+    insegnamento = {**all_data[0], **all_data[1]}
+    return insegnamento
+            
+#---------------------------------------------------------------------end functions
+
+
+
+
 
 # Crea l'istanza del driver Chrome usando Selenium Manager 
 driver = webdriver.Chrome()
@@ -12,9 +92,16 @@ driver.get('https://unibg.coursecatalogue.cineca.it')
 
 #accetta i cookies
 accept_cookies_selector = 'c-p-bn'
-accept_cookies = WebDriverWait(driver, 60).until(
+accept_cookies = WebDriverWait(driver, 10).until(
     EC.element_to_be_clickable((By.ID, accept_cookies_selector)))
 accept_cookies.click()
+
+all_data = []
+# Creazione di un DataFrame vuoto senza intestazioni
+df_vuoto = pd.DataFrame()
+
+# Creazione del file Excel vuoto
+df_vuoto.to_excel("unibg_dati.xlsx", index=False)
 
 #seleziono l'anno di immatricolazione
 
@@ -22,26 +109,28 @@ a_immatricolazione_selector = '#offerta-formativa'
 select_element = driver.find_element(By.CSS_SELECTOR, a_immatricolazione_selector)
 select = Select(select_element) # crea un oggetto Select
 selected_option = select.first_selected_option # ottieni l'opzione selezionata
-print(selected_option.text)  
+
+all_data.append({"anno_immatricolazione": selected_option.text})
 
 #entra nei dipartimenti------------------------------------------------------
 dipartimenti_selector = '.u-font-text'
-dipartimenti = WebDriverWait(driver, 60).until(
+dipartimenti = WebDriverWait(driver, 10).until(
     EC.presence_of_all_elements_located((By.CSS_SELECTOR, dipartimenti_selector)))
 
 for i in range(len(dipartimenti)):
-   dipartimenti = WebDriverWait(driver, 60).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, dipartimenti_selector)))
+   dipartimenti = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, dipartimenti_selector)))
    dipartimenti[i].click()
 
 
    name_dipartimento_selector = '.corsi-group-title'
-   name_dipartimento = WebDriverWait(driver, 60).until(
+   name_dipartimento = WebDriverWait(driver, 10).until(
     EC.presence_of_element_located((By.CSS_SELECTOR, name_dipartimento_selector)))
-   print(name_dipartimento.text)
+   all_data.append({"dipartimento": name_dipartimento.text.strip()})
+   print("Dipartimento: ", name_dipartimento.text.strip())
 
     # entra nei corsi-----------------------------------------------------
    corsi_selector = '#main-content a'
-   corsi = WebDriverWait(driver, 60).until(
+   corsi = WebDriverWait(driver, 10).until(
         EC.presence_of_all_elements_located((By.CSS_SELECTOR, corsi_selector))
     )
 
@@ -59,12 +148,12 @@ for i in range(len(dipartimenti)):
         #ESTRAZIONE DATI CORSO
         #estrai il nome del corso
         name_corso_selector = '.u-filetto'
-        name_corso = WebDriverWait(driver, 60).until(
+        name_corso = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, name_corso_selector))
         )
 
         #prendo il contenitore delle informazioni
-        contenitore = WebDriverWait(driver, 20).until(
+        contenitore = WebDriverWait(driver, 10).until(
         EC.presence_of_element_located((By.CSS_SELECTOR, ".accordion"))
         )
         # prendo l'ultimo dd
@@ -97,17 +186,17 @@ for i in range(len(dipartimenti)):
         
         corso[last_dt] = last_dd
 
-        print(corso)
+        all_data.append(corso)
 
         #entro nella pagina degli insegnamenti
-        btn_insegnamenti=WebDriverWait(driver, 20).until(
+        btn_insegnamenti=WebDriverWait(driver, 10).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, ".active~ li+ li a"))
         )
         btn_insegnamenti.click()
         #prendo i link degli insegnamenti
         insegnamenti_selector = '.flex-container a'
-        insegnamenti = WebDriverWait(driver, 60).until(
-        EC.presence_of_all_elements_located((By.CSS_SELECTOR, corsi_selector))
+        insegnamenti = WebDriverWait(driver, 10).until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, insegnamenti_selector))
         )
 
         #estrai tutti gli href dei link trovati
@@ -116,88 +205,66 @@ for i in range(len(dipartimenti)):
             href = insegnamento.get_attribute("href")
             if href:  # solo se l'attributo esiste
                 links_insegnamenti.append(href)
+        
+        #entro negli insegnamenti -------------------------------------------------
+        for link in links_insegnamenti:
+            driver.get(link)  # naviga alla pagina dell'insegnmento
+            #ESTRAZIONE DATI INSEGNAMENTO
 
-        print(len(links_insegnamenti))
+            #controllo che ci sia un insegnamento diviso in moduli
+            try:
+                xpath = ("//div[contains(@class,'insegnamento-links')]""//p[contains(translate(.,'ABCDEFGHIJKLMNOPQRSTUVWXYZÀÈÉÌÒÙ','abcdefghijklmnopqrstuvwxyzàèéìòù'),'diviso in moduli')]")
+                wait = WebDriverWait(driver, 4)
+                p = wait.until(EC.presence_of_element_located((By.XPATH, xpath)))
+                div_moduli = driver.find_elements(By.CSS_SELECTOR, "div.insegnamento-links li a")
+                links_moduli = []
+                if div_moduli:
+                    for modulo in div_moduli:
+                        href = modulo.get_attribute("href")
+                        if href:  # solo se l'attributo esiste
+                            links_moduli.append(href)
+                
+                    
+                for link_modulo in links_moduli:
+                    driver.get(link_modulo)  # naviga alla pagina del modulo
+                    insegnamento = estrai_insegnamento(driver)
+                    all_data.append(insegnamento)
+                    #torna alla pagina dell'insegnamento
+                    driver.back()
+            except:
+                insegnamento = estrai_insegnamento(driver)
+                all_data.append(insegnamento)
+            #torna alla pagina del corso
+            driver.back()
+
+
+        
         
         #torna al blocco INFO
         driver.back()
-        # torna indietro alla pagina dei corsi
+        # torna indietro alla pagina della lista corsi
         driver.back()
     #torna indietro ai dipartimenti
    driver.back()
 
-dipartimenti = WebDriverWait(driver, 60).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, dipartimenti_selector)))
+# Creazione del DataFrame dai nuovi dati
+df_nuovi = pd.DataFrame(all_data)
+
+# Aggiungi i nuovi dati al file Excel esistente
+with pd.ExcelWriter("unibg_dati.xlsx", engine="openpyxl", mode="a", if_sheet_exists="overlay") as writer:
+    df_nuovi.to_excel(writer, index=False, header=False, startrow=writer.sheets["Sheet1"].max_row)
+
+dipartimenti = WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, dipartimenti_selector)))
 driver.back()
     
 
-
-
-
-# # INSEGNAMENTO----------------------------------------------------------
-# #----------------------------------------------------------------------
-# #selezione la parte interessata
-# selector = 'dd+ dt'
-# #Attendo che gli elementi siano presenti
-# links = WebDriverWait(driver, 60).until(
-#     EC.presence_of_all_elements_located((By.CSS_SELECTOR, selector))
-# )
-
-# # Itera su ogni elemento in links
-# for link in links:
-#     try:
-#         # Clicca sull'elemento per rivelare il contenuto
-#         link.click()
-        
-        
-#     except Exception as e:
-#         print(f"Errore durante il clic su un elemento: {e}")
-
-# content_selector = '.accordion'
-# contents = WebDriverWait(driver, 60).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, content_selector)))
- 
-# all_data = []
-
-# title_selector = '.u-filetto'
-# titles = WebDriverWait(driver, 60).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, title_selector)))
-
-
-# # Estrazione dei dati
-# for title in titles:
-#     title = title.text.strip()  
-#     id_corso = title.split("]")[0].strip("[")     
-#     titolo_corso = title.split(" - ")[1]          
-
-# # Creazione del dizionario
-# corso = {
-#     "id": id_corso,
-#     "titolo": titolo_corso
-# }
-
-# all_data.append(corso)
-
-
-# for dl in contents:
-#     dt_elements = dl.find_elements(By.TAG_NAME, "dt")
-#     dd_elements = dl.find_elements(By.TAG_NAME, "dd")
-
-#     data = {}
-#     for dt, dd in zip(dt_elements, dd_elements):
-#         key = dt.text.strip()
-#         value = dd.text.strip()
-#         data[key] = value
-
-#     all_data.append(data)
-# # for content in contents:
-# #    print(content.text)
-# # Rimuovi la chiave 'Informazioni generali' se esiste
-# data.pop('Informazioni generali', None)
-
-# # Unione dei due dizionari
-# insegnamento = {**all_data[0], **all_data[1]}
-# print(insegnamento)
-# #----------------------------------------------------------------------
-
-
 # Chiudi il driver
 driver.quit()
+
+
+
+
+
+
+
 
