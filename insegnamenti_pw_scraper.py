@@ -2,12 +2,146 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError
+import unicodedata
 
+def flatten_sezioni_special(sezioni: dict) -> dict:
+    """
+    Appiattisce `sezioni` e restituisce solo gli header fissi richiesti.
+    - Le sottochiavi di 'Informazioni generali' vengono portate a top-level.
+    - Sinonimi e varianti (accenti, apostrofi, plurali) vengono unificati.
+    - Se arrivano più valori per lo stesso header, si sceglie il migliore (non vuoto; più lungo).
+    - Campi mancanti -> None.
+    """
+
+    # Header fissi e ordine
+    headers = [
+        "Corso di studi", "Percorso", "Tipo di corso", "Anno di offerta", "Anno di corso",
+        "Tipo Attività Formativa", "Ambito", "Lingua", "Crediti", "Tipo attività didattica",
+        "Valutazione", "Periodo didattico", "Docente titolare", "Responsabili", "Durata",
+        "Frequenza", "Modalità didattica", "Settore scientifico disciplinare", "Sede",
+        "Obiettivi agenda", "Prerequisiti", "Obiettivi formativi", "Contenuti",
+        "Metodi didattici", "Verifica dell'apprendimento", "Altro",
+        "Risorse online", "Testi"
+    ]
+
+    # Normalizzazione chiavi: lowercase, no accenti, apostrofi uniformati, no punteggiatura (tranne spazi)
+    def _canon(s: str) -> str:
+        s = (s or "").strip().lower()
+        # uniforma apostrofi
+        s = s.replace("’", "'").replace("`", "'")
+        # rimuovi accenti
+        s = "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+        # sostituisci apostrofi con nulla
+        s = s.replace("'", "")
+        # rimuovi tutto ciò che non è alfanumerico o spazio
+        s = re.sub(r"[^a-z0-9\s]", " ", s)
+        # comprimi spazi
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    # Mappa sinonimi/varianti (chiavi canoniche -> header target)
+    syn = {
+        # generali
+        "corso di studi": "Corso di studi",
+        "percorso": "Percorso",
+        "tipo di corso": "Tipo di corso",
+        "anno di offerta": "Anno di offerta",
+        "anno di corso": "Anno di corso",
+        "tipo attivita formativa": "Tipo Attività Formativa",
+        "ambito": "Ambito",
+        "lingua": "Lingua",
+        "crediti": "Crediti",
+        "crediti cfu": "Crediti",
+        "cfu": "Crediti",
+        "tipo attivita didattica": "Tipo attività didattica",
+        "valutazione": "Valutazione",
+        "periodo didattico": "Periodo didattico",
+        "docente titolare": "Docente titolare",
+        "docenti": "Docente titolare",
+        "responsabili": "Responsabili",
+        "durata": "Durata",
+        "frequenza": "Frequenza",
+        "modalita didattica": "Modalità didattica",
+        "modalita dell insegnamento": "Modalità didattica",
+        "settore scientifico disciplinare": "Settore scientifico disciplinare",
+        "sede": "Sede",
+        "obiettivi agenda": "Obiettivi agenda",
+        "prerequisiti": "Prerequisiti",
+        # obiettivi
+        "obiettivi formativi": "Obiettivi formativi",
+        "obiettivi del modulo": "Obiettivi formativi",
+        "obiettivi dell insegnamento": "Obiettivi formativi",
+        "obiettivi insegnamento": "Obiettivi formativi",
+        "obiettivi specifici": "Obiettivi formativi",
+        # contenuti
+        "contenuti": "Contenuti",
+        "contenuti del modulo": "Contenuti",
+        "contenuto del modulo": "Contenuti",
+        "programma del corso": "Contenuti",
+        # metodi
+        "metodi didattici": "Metodi didattici",
+        "metodologia didattica": "Metodi didattici",
+        # verifica
+        "verifica dell apprendimento": "Verifica dell'apprendimento",
+        "valutazione dell apprendimento": "Verifica dell'apprendimento",
+        # altro / risorse / testi
+        "altro": "Altro",
+        "risorse online": "Risorse online",
+        "testi": "Testi",
+        "testi d esame": "Testi",
+        "testi esame": "Testi",
+        "testi di esame": "Testi",
+    }
+
+    # Helper: scegli il "miglior" valore fra due (preferisci non vuoto; poi quello più lungo)
+    def _choose_better(old, new):
+        old_s = ("" if old is None else str(old)).strip()
+        new_s = ("" if new is None else str(new)).strip()
+        if old_s and not new_s:
+            return old
+        if new_s and not old_s:
+            return new
+        # entrambi valorizzati: tieni il più lungo per perdere meno info
+        return new if len(new_s) > len(old_s) else old
+
+    # 1) raccogli in un buffer tutti i candidati (dopo normalizzazione + sinonimi)
+    collected = {}
+
+    if isinstance(sezioni, dict):
+        # Informazioni generali
+        info_gen = sezioni.get("Informazioni generali")
+        if isinstance(info_gen, dict):
+            for k, v in info_gen.items():
+                key_std = syn.get(_canon(k), None)
+                if key_std in headers:
+                    collected[key_std] = _choose_better(collected.get(key_std), v)
+
+        # Altre sezioni
+        for k, v in sezioni.items():
+            if k == "Informazioni generali":
+                continue
+            key_c = _canon(k)
+            key_std = syn.get(key_c, None)
+            if isinstance(v, dict):
+                # Sezione strutturata non mappata: prova a pescare testo utile
+                # (qui puoi specializzare se alcune sezioni strutturate vanno mappate)
+                for subk, subv in v.items():
+                    sub_std = syn.get(_canon(subk), None)
+                    if sub_std in headers:
+                        collected[sub_std] = _choose_better(collected.get(sub_std), subv)
+            else:
+                if key_std in headers:
+                    collected[key_std] = _choose_better(collected.get(key_std), v)
+
+    # 2) costruisci l'output con TUTTI gli header (missing -> None)
+    final = {h: collected.get(h, None) for h in headers}
+    return final
 
 # -----------------------------
 # Utilità di normalizzazione
@@ -49,6 +183,7 @@ async def _launch_browser(headless: bool = True):
 # Scraper di una singola pagina
 # -----------------------------
 async def _scrape_single_insegnamento(
+    id_corso: str,
     context,
     url: str,
     timeout_ms: int = 20000,
@@ -164,11 +299,18 @@ async def _scrape_single_insegnamento(
                         except Exception:
                             cfu = None
 
+            hash_part = hashlib.sha1(title.encode("utf-8")).hexdigest()[:10]
+            id_insegnamento=f"I-{hash_part}"
+            flat_sezioni = flatten_sezioni_special(sezioni)
+            
+
             result = {
-                "source_url": url,
+                "id_insegnamento": id_insegnamento,
+                "id_corso": id_corso,
                 "title": title,
                 "cfu": cfu,
-                "sezioni": sezioni,
+                "source_url": url,
+                **flat_sezioni,
             }
 
             await page.close()
@@ -183,10 +325,26 @@ async def _scrape_single_insegnamento(
             await asyncio.sleep(0.5 * (attempt + 1))
 
     return {
-        "source_url": url,
+        "id_insegnamento": f"I-ERROR-{hashlib.sha1(url.encode('utf-8')).hexdigest()[:10]}",
+        "id_corso": id_corso,
         "title": None,
         "cfu": None,
-        "sezioni": {},
+        "source_url": url,
+        "Corso di studi": None,
+        "Tipo di corso": None,
+        "Anno di offerta": None,
+        "Anno di corso": None,
+        "Lingua": None,
+        "Crediti": None,
+        "Docenti": None,
+        "Sede": None,
+        "Prerequisiti": None,
+        "Obiettivi formativi": None,
+        "Contenuti": None,
+        "Metodi didattici": None,
+        "Verifica dell'apprendimento": None,
+        "Risorse online": None,
+        "Altro": None,
         "error": str(last_exc) if last_exc else "Unknown error",
     }
 
@@ -195,6 +353,7 @@ async def _scrape_single_insegnamento(
 # Batch asincrono
 # -----------------------------
 async def scrape_insegnamenti_async(
+    id_corso: str,
     urls: List[str],
     concurrency: int = 6,
     timeout_ms: int = 20000
@@ -209,7 +368,7 @@ async def scrape_insegnamenti_async(
 
         async def worker(u: str):
             async with sem:
-                return await _scrape_single_insegnamento(context, u, timeout_ms=timeout_ms)
+                return await _scrape_single_insegnamento(id_corso, context, u, timeout_ms=timeout_ms)
 
         tasks = [asyncio.create_task(worker(u)) for u in urls]
         for t in asyncio.as_completed(tasks):
@@ -223,6 +382,7 @@ async def scrape_insegnamenti_async(
 # Wrapper sincrono
 # -----------------------------
 def scrape_insegnamenti(
+    id_corso: str,
     urls: List[str],
     concurrency: int = 6,
     timeout_ms: int = 20000
@@ -230,4 +390,4 @@ def scrape_insegnamenti(
     """
     Wrapper sincrono per usare la funzione asincrona in qualsiasi script.
     """
-    return asyncio.run(scrape_insegnamenti_async(urls, concurrency=concurrency, timeout_ms=timeout_ms))
+    return asyncio.run(scrape_insegnamenti_async(id_corso, urls, concurrency=concurrency, timeout_ms=timeout_ms))
